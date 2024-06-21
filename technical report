@@ -1,0 +1,161 @@
+# coding:utf-8
+# import base tools
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import style
+import warnings
+warnings.filterwarnings('ignore')
+style.use('ggplot')
+% matplotlib inline
+team_playoff = pd.read_csv('../input/NBAdata/team_playoff.csv')
+team_season = pd.read_csv('../input/NBAdata/team_season.csv')
+def add_season(date):
+    season = np.zeros(len(date))
+    for i,d in enumerate(date.str.split('-').str[0:2]):
+        season[i] = int(d[0]) if int(d[1])<7 else int(d[0])+1
+    return season
+
+# generate score_diff_team_a = score(team_a) - score(team_b)
+def add_score_diff(res):
+    diff = np.zeros(len(res))
+    for i,d in enumerate(res.str.split('-')):
+        diff[i] = abs(int(d[1][0:-3]) - int(d[0][3:]))
+    return diff
+
+team_season['分差'] = add_score_diff(team_season['比分'])
+team_playoff['分差'] = add_score_diff(team_playoff['比分'])
+team_season['赛季'] = add_season(team_season.时间)
+team_playoff['赛季'] = add_season(team_playoff.时间)
+
+# replace ['L'/'W'] with [-1/1]
+team_season['结果'].replace(['L','W'],[-1,1], inplace=True)
+team_playoff['结果'].replace(['L','W'],[-1,1], inplace=True)
+temp = team_season[['得分','赛季','分差','篮板','犯规','罚球','罚球命中','罚球出手','失误','助攻','投篮']].groupby('赛季')
+plt.figure(figsize=(14,4))
+plt.subplot(121)
+plt.title('各个赛季得分: 极值与均值')
+plt.plot(temp['得分'].min(),'g.',alpha=0.7)
+plt.plot(temp['得分'].max(),'g.',alpha=0.7)
+plt.plot(temp['得分'].mean(),'bo',temp.mean()['得分'],'k',alpha=0.8)
+plt.subplot(122)
+plt.title('各个赛季得分标准差与场均分差')
+plt.plot(temp['得分'].std(),'go',temp['得分'].std(),'k',alpha=0.8)
+plt.plot(temp['分差'].mean(),'ro',temp['分差'].mean(),'k',alpha=0.8)
+plt.legend()
+
+plt.figure(figsize=(14,4))
+plt.subplot(131)
+plt.plot(temp.min()['篮板'],'g.',alpha=0.7)
+plt.plot(temp.max()['篮板'],'g.',alpha=0.7)
+plt.plot(temp.mean()['篮板'],'o',temp.mean()['篮板'],'k',alpha=0.8)
+
+plt.subplot(231)
+plt.plot(temp['失误'].mean(),'ko',temp['失误'].mean(),'grey',alpha=0.8);plt.legend()
+plt.subplot(234)
+plt.plot(temp['助攻'].mean(),'yo',temp['助攻'].mean(),'c',alpha=0.8);plt.legend()
+plt.subplot(232)
+plt.plot(temp['犯规'].mean(),'co',temp['犯规'].mean(),'k',alpha=0.8);plt.legend()
+plt.subplot(235)
+plt.plot(temp['罚球'].mean(), 'o',temp['罚球'].mean(),'grey',alpha=0.8);plt.legend()
+plt.subplot(233)
+plt.plot(temp['投篮'].mean(),'ro',temp['投篮'].mean(),'k',alpha=0.8);plt.legend()
+plt.subplot(236)
+plt.plot(temp['篮板'].mean(),'ko',temp['篮板'].mean(),'orange',alpha=0.8);plt.legend()
+
+team_playoff['分差'] *= team_playoff['结果']
+team_season['分差'] *= team_playoff['结果']
+
+
+def Messi_rank(season_data, index):
+    train = season_data[['球队',index]].groupby('球队').sum()
+    A = -np.ones((train.shape[0],train.shape[0]))
+    for i in range(0,train.shape[0]-1):
+        A[i,i] += train.shape[0]
+    A[i+1] = 1
+    train.iloc[-1] = 0
+    rank = np.dot(np.linalg.inv(A),train.values)
+    rank = pd.DataFrame(rank,index=train.index)
+    return rank
+
+group_playoff = team_playoff.groupby('赛季')
+messi_res = []
+for s,d in group_playoff:
+    messi_res.append(Messi_rank(d,'分差'))
+fig, axes = plt.subplots(nrows=2, ncols=3,figsize=(16,8))
+r = c = 0
+for i,d in enumerate(messi_res):
+    if(i+1986 in [1996,1997,1998,2001,2014,2016]):
+        d.sort_values(by=0).plot(kind='bar',ax=axes[r,c],title=i+1986,label=None,legend=None)
+        c += 1
+        if(c==3):
+            c = 0;r=1
+from sklearn.linear_model import LogisticRegression as LR
+from sklearn.svm import SVC
+from sklearn import preprocessing
+
+data = team_playoff.groupby(['赛季','球队'])
+features = team_playoff.columns[5:-1]
+print('Simple Features: \n\t',features)
+
+gtrain_data = data.mean()[features].reset_index()
+winner_count = data.结果.sum()
+winner_count = winner_count.reset_index()
+winner_count.head()
+
+
+
+
+champs = None
+champs_index = winner_count.groupby('赛季').apply(lambda t: t[t['结果']==t['结果'].max()])
+champs_index = champs_index.drop([(2013.0,411)]) # 数据有些问题，根据净胜结果选取冠军同时出现了2013马刺和热火，因此删除
+champs = team_playoff.merge(champs_index, on=['赛季','球队'],how='inner').groupby(['赛季','球队']).mean()[features]
+
+finals = []
+features_importance = []
+
+for season,tr in gtrain_data.groupby('赛季'):
+    tr = tr[features]
+    score = winner_count[winner_count['赛季']==season]['结果']
+    score = (score==max(score))*1
+    model1 = LR()
+    model1.fit(tr,score)
+    features_importance.append(model1.coef_[0])
+    finals.append(model1.predict_proba(champs)[:,1])
+    print(season,',',model1.score(tr,score),end='| ')
+    if(season%5==0): print('\n')
+
+
+cols = champs_index['赛季'].astype(str).str[0:4] + '-' + champs_index['球队']
+finals = pd.DataFrame(finals)
+finals.columns = cols.values
+
+ranks = []
+for name,row in finals.iterrows():
+    row = np.array(row)
+    row[np.argsort(row)] = range(0,len(row))
+    ranks.append(row)
+ranks = pd.DataFrame(ranks, columns=finals.columns)
+ranks.sum().sort_values().plot(kind='barh',figsize=(10,6),color='darkred')
+
+
+
+
+plt.figure(figsize=(15,10))
+_,ax = plt.subplots()
+ax.set_xticks(np.arange(ranks.shape[1])+0.5, minor=False)
+ax.set_yticks(np.arange(ranks.shape[0])+0.5, minor=False)
+ax.pcolor(ranks.T,cmap=plt.cm.Purples, alpha=0.8)
+ax.set_xticklabels(ranks.T.columns, minor=False)
+ax.set_yticklabels(ranks.T.index, minor=False)
+
+
+features_importance = pd.DataFrame(features_importance,columns = features)
+features_importance.index += 1986
+features_importance
+
+
+features_importance.mean().plot(kind='bar',figsize=(16,8))
+
+
+
